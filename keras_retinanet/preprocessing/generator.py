@@ -196,26 +196,45 @@ class Generator(object):
         max_shape = tuple(max(image.shape[x] for image in image_group) for x in range(3))
 
         # compute labels and regression targets
-        labels_group     = [None] * self.batch_size
-        regression_group = [None] * self.batch_size
+        labels_group     = [[]] * self.batch_size
+        regression_group = [[]] * self.batch_size
         for index, (image, annotations) in enumerate(zip(image_group, annotations_group)):
             # compute regression targets
-            labels_group[index], annotations, anchors = self.anchor_targets(max_shape, annotations, self.num_classes(), mask_shape=image.shape)
-            regression_group[index] = bbox_transform(anchors, annotations)
+            labels_group[index], regression_targets, anchors = self.anchor_targets(max_shape, annotations, self.num_classes(), mask_shape=image.shape)
+            num_positive = max(np.sum([np.sum(labels == 1) for labels in labels_group[index]]), 1)
 
-            # append anchor states to regression targets (necessary for filtering 'ignore', 'positive' and 'negative' anchors)
-            anchor_states           = np.max(labels_group[index], axis=1, keepdims=True)
-            regression_group[index] = np.append(regression_group[index], anchor_states, axis=1)
+            # append anchor states and normalization value
+            for a, at, lg in zip(anchors, regression_targets, labels_group[index]):
+                regression_group[index].append(bbox_transform(a, at))
 
-        labels_batch     = np.zeros((self.batch_size,) + labels_group[0].shape, dtype=keras.backend.floatx())
-        regression_batch = np.zeros((self.batch_size,) + regression_group[0].shape, dtype=keras.backend.floatx())
+                # append anchor states to regression targets (necessary for filtering 'ignore', 'positive' and 'negative' anchors)
+                # append normalization value (1 / num_positive_anchors)
+                regression_group[index][-1] = np.concatenate([
+                    regression_group[index][-1],
+                    np.max(lg, axis=1, keepdims=True),  # anchor states
+                    np.ones((regression_group[index][-1].shape[0], 1)) * num_positive,  # normalization value
+                ], axis=1)
 
-        # copy all labels and regression values to the batch blob
+            # append normalization value
+            for i in range(len(labels_group[index])):
+                labels_group[index][i] = np.concatenate([
+                    labels_group[index][i],
+                    np.ones((labels_group[index][i].shape[0], 1)) * num_positive,  # normalization value
+                ], axis=1)
+
+        # use labels and regression to construct batches for P3...P7
+        labels_batches     = [np.zeros((self.batch_size,) + lg.shape, dtype=keras.backend.floatx()) for lg in labels_group[0]]
+        regression_batches = [np.zeros((self.batch_size,) + r.shape, dtype=keras.backend.floatx()) for r in regression_group[0]]
+
+        # loop over images
         for index, (labels, regression) in enumerate(zip(labels_group, regression_group)):
-            labels_batch[index, ...]     = labels
-            regression_batch[index, ...] = regression
+            # loop over P3...P7 for one image
+            for i in range(len(labels)):
+                # copy data to corresponding batch
+                labels_batches[i][index, ...]     = labels[i]
+                regression_batches[i][index, ...] = regression[i]
 
-        return [regression_batch, labels_batch]
+        return regression_batches + labels_batches
 
     def compute_input_output(self, group):
         # load images and annotations

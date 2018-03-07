@@ -26,39 +26,45 @@ def anchor_targets_bbox(
     positive_overlap=0.5,
     **kwargs
 ):
-    anchors = anchors_for_shape(image_shape, **kwargs)
+    all_anchors            = anchors_for_shape(image_shape, **kwargs)
+    all_labels             = []
+    all_regression_targets = []
 
-    # label: 1 is positive, 0 is negative, -1 is dont care
-    labels = np.ones((anchors.shape[0], num_classes)) * -1
+    for anchors in all_anchors:
+        # label: 1 is positive, 0 is negative, -1 is dont care
+        labels = np.ones((anchors.shape[0], num_classes)) * -1
 
-    if annotations.shape[0]:
-        # obtain indices of gt annotations with the greatest overlap
-        overlaps             = compute_overlap(anchors, annotations[:, :4])
-        argmax_overlaps_inds = np.argmax(overlaps, axis=1)
-        max_overlaps         = overlaps[np.arange(overlaps.shape[0]), argmax_overlaps_inds]
+        if annotations.shape[0]:
+            # obtain indices of gt annotations with the greatest overlap
+            overlaps             = compute_overlap(anchors, annotations[:, :4])
+            argmax_overlaps_inds = np.argmax(overlaps, axis=1)
+            max_overlaps         = overlaps[np.arange(overlaps.shape[0]), argmax_overlaps_inds]
 
-        # assign bg labels first so that positive labels can clobber them
-        labels[max_overlaps < negative_overlap, :] = 0
+            # assign bg labels first so that positive labels can clobber them
+            labels[max_overlaps < negative_overlap, :] = 0
 
-        # compute box regression targets
-        annotations = annotations[argmax_overlaps_inds]
+            # compute box regression targets
+            regression_targets = annotations[argmax_overlaps_inds]
 
-        # fg label: above threshold IOU
-        positive_indices = max_overlaps >= positive_overlap
-        labels[positive_indices, :] = 0
-        labels[positive_indices, annotations[positive_indices, 4].astype(int)] = 1
-    else:
-        # no annotations? then everything is background
-        labels[:] = 0
-        annotations = np.zeros_like(anchors)
+            # fg label: above threshold IOU
+            positive_indices = max_overlaps >= positive_overlap
+            labels[positive_indices, :] = 0
+            labels[positive_indices, regression_targets[positive_indices, 4].astype(int)] = 1
+        else:
+            # no annotations? then everything is background
+            labels[:] = 0
+            regression_targets = np.zeros_like(anchors)
 
-    # ignore annotations outside of image
-    mask_shape         = image_shape if mask_shape is None else mask_shape
-    anchors_centers    = np.vstack([(anchors[:, 0] + anchors[:, 2]) / 2, (anchors[:, 1] + anchors[:, 3]) / 2]).T
-    indices            = np.logical_or(anchors_centers[:, 0] >= mask_shape[1], anchors_centers[:, 1] >= mask_shape[0])
-    labels[indices, :] = -1
+        # ignore annotations outside of image
+        mask_shape         = image_shape if mask_shape is None else mask_shape
+        anchors_centers    = np.vstack([(anchors[:, 0] + anchors[:, 2]) / 2, (anchors[:, 1] + anchors[:, 3]) / 2]).T
+        indices            = np.logical_or(anchors_centers[:, 0] >= mask_shape[1], anchors_centers[:, 1] >= mask_shape[0])
+        labels[indices, :] = -1
 
-    return labels, annotations, anchors
+        all_labels.append(labels)
+        all_regression_targets.append(regression_targets)
+
+    return all_labels, all_regression_targets, all_anchors
 
 
 def anchors_for_shape(
@@ -86,12 +92,12 @@ def anchors_for_shape(
         image_shape = (image_shape + 1) // 2
 
     # compute anchors over all pyramid levels
-    all_anchors = np.zeros((0, 4))
+    all_anchors = []
     for idx, p in enumerate(pyramid_levels):
         image_shape     = (image_shape + 1) // 2
         anchors         = generate_anchors(base_size=sizes[idx], ratios=ratios, scales=scales)
         shifted_anchors = shift(image_shape, strides[idx], anchors)
-        all_anchors     = np.append(all_anchors, shifted_anchors, axis=0)
+        all_anchors.append(shifted_anchors)
 
     return all_anchors
 

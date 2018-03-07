@@ -20,21 +20,12 @@ from . import backend
 
 def focal(alpha=0.25, gamma=2.0):
     def _focal(y_true, y_pred):
-        labels         = y_true
+        labels         = y_true[:, :, :-1]
+        divisor        = y_true[:, :, -1:]
         classification = y_pred
 
-        # compute the divisor: for each image in the batch, we want the number of positive anchors
-
-        # clip the labels to 0, 1 so that we ignore the "ignore" label (-1) in the divisor
-        divisor = backend.where(keras.backend.less_equal(labels, 0), keras.backend.zeros_like(labels), labels)
-        divisor = keras.backend.max(divisor, axis=2, keepdims=True)
-        divisor = keras.backend.cast(divisor, keras.backend.floatx())
-
-        # compute the number of positive anchors
-        divisor = keras.backend.sum(divisor, axis=1, keepdims=True)
-
-        #  ensure we do not divide by 0
-        divisor = keras.backend.maximum(1.0, divisor)
+        # compute all anchor states
+        anchor_state = keras.backend.max(labels, axis=2)  # -1 for ignore, 0 for background, 1 for object
 
         # compute the focal loss
         alpha_factor = keras.backend.ones_like(labels) * alpha
@@ -48,9 +39,7 @@ def focal(alpha=0.25, gamma=2.0):
         cls_loss = cls_loss / divisor
 
         # filter out "ignore" anchors
-        anchor_state = keras.backend.max(labels, axis=2)  # -1 for ignore, 0 for background, 1 for object
-        indices      = backend.where(keras.backend.not_equal(anchor_state, -1))
-
+        indices  = backend.where(keras.backend.not_equal(anchor_state, -1))
         cls_loss = backend.gather_nd(cls_loss, indices)
 
         # divide by the size of the minibatch
@@ -66,15 +55,8 @@ def smooth_l1(sigma=3.0):
         # separate target and state
         regression        = y_pred
         regression_target = y_true[:, :, :4]
-        anchor_state      = y_true[:, :, 4]
-
-        # compute the divisor: for each image in the batch, we want the number of positive anchors
-        divisor = backend.where(keras.backend.equal(anchor_state, 1), keras.backend.ones_like(anchor_state), keras.backend.zeros_like(anchor_state))
-        divisor = keras.backend.sum(divisor, axis=1, keepdims=True)
-        divisor = keras.backend.maximum(1.0, divisor)
-
-        # pad the tensor to have shape (batch_size, 1, 1) for future division
-        divisor   = keras.backend.expand_dims(divisor, axis=2)
+        anchor_state      = y_true[:, :, -2]
+        divisor           = y_true[:, :, -1:]
 
         # compute smooth L1 loss
         # f(x) = 0.5 * (sigma * x)^2          if |x| < 1 / sigma / sigma
@@ -90,7 +72,7 @@ def smooth_l1(sigma=3.0):
         # normalise by the number of positive and negative anchors for each entry in the minibatch
         regression_loss = regression_loss / divisor
 
-        # filter out "ignore" anchors
+        # filter out "ignore" and "background" anchors
         indices         = backend.where(keras.backend.equal(anchor_state, 1))
         regression_loss = backend.gather_nd(regression_loss, indices)
 

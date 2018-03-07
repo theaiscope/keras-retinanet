@@ -37,18 +37,39 @@ def test_backbone(backbone, alpha):
     num_classes = 10
 
     inputs = np.zeros((1, 1024, 363, 3), dtype=np.float32)
-    targets = [np.zeros((1, 70776, 5), dtype=np.float32), np.zeros((1, 70776, num_classes))]
+    regression_targets = [
+        np.zeros((1, 52992, 6)),
+        np.zeros((1, 13248, 6)),
+        np.zeros((1, 3456, 6)),
+        np.zeros((1, 864, 6)),
+        np.zeros((1, 216, 6)),
+    ]
+    classification_targets = [
+        np.zeros((1, 52992, num_classes + 1)),
+        np.zeros((1, 13248, num_classes + 1)),
+        np.zeros((1, 3456, num_classes + 1)),
+        np.zeros((1, 864, num_classes + 1)),
+        np.zeros((1, 216, num_classes + 1)),
+    ]
+    targets = regression_targets + classification_targets
 
     inp = keras.layers.Input(inputs[0].shape)
 
     training_model = mobilenet_retinanet(num_classes=num_classes, backbone='{}_{}'.format(backbone, format(alpha)), inputs=inp)
-    training_model.summary()
 
     # compile model
     training_model.compile(
         loss={
-            'regression': losses.smooth_l1(),
-            'classification': losses.focal()
+            'regression_P3': losses.smooth_l1(),
+            'regression_P4': losses.smooth_l1(),
+            'regression_P5': losses.smooth_l1(),
+            'regression_P6': losses.smooth_l1(),
+            'regression_P7': losses.smooth_l1(),
+            'classification_P3': losses.focal(),
+            'classification_P4': losses.focal(),
+            'classification_P5': losses.focal(),
+            'classification_P6': losses.focal(),
+            'classification_P7': losses.focal(),
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001))
 

@@ -34,7 +34,8 @@ def evaluate_coco(generator, model, threshold=0.05):
         image, scale = generator.resize_image(image)
 
         # run network
-        _, _, detections = model.predict_on_batch(np.expand_dims(image, axis=0))
+        outputs    = model.predict_on_batch(np.expand_dims(image, axis=0))
+        detections = outputs[-1]
 
         # clip to image shape
         detections[:, :, 0] = np.maximum(0, detections[:, :, 0])

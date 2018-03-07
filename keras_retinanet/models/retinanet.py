@@ -155,24 +155,28 @@ def default_submodels(num_classes, anchor_parameters):
 
 
 def __build_model_pyramid(name, model, features):
-    return keras.layers.Concatenate(axis=1, name=name)([model(f) for f in features])
+    return [
+        keras.layers.Lambda(
+            lambda x: x,
+            name='{}_P{}'.format(name, 3 + index)
+        )(model(f)) for index, f in enumerate(features)
+    ]
 
 
 def __build_pyramid(models, features):
-    return [__build_model_pyramid(n, m, features) for n, m in models]
+    return [level for pyramid in [__build_model_pyramid(n, m, features) for n, m in models] for level in pyramid]
 
 
 def __build_anchors(anchor_parameters, features):
-    anchors = []
-    for i, f in enumerate(features):
-        anchors.append(layers.Anchors(
+    return [
+        layers.Anchors(
             size=anchor_parameters.sizes[i],
             stride=anchor_parameters.strides[i],
             ratios=anchor_parameters.ratios,
             scales=anchor_parameters.scales,
-            name='anchors_{}'.format(i)
-        )(f))
-    return keras.layers.Concatenate(axis=1)(anchors)
+            name='anchors_P{}'.format(3 + i)
+        )(f) for i, f in enumerate(features)
+    ]
 
 
 def retinanet(
@@ -182,8 +186,33 @@ def retinanet(
     anchor_parameters       = AnchorParameters.default,
     create_pyramid_features = __create_pyramid_features,
     submodels               = None,
+    output_fpn              = False,
     name                    = 'retinanet'
 ):
+    """ Construct a RetinaNet model on top of a backbone.
+
+    This model is the minimum model necessary for training (with the unfortunate exception of anchors as output).
+
+    # Arguments
+        inputs                  : keras.layers.Input (or list of) for the input to the model.
+        num_classes             : Number of classes to classify.
+        anchor_parameters       : Struct containing configuration for anchor generation (sizes, strides, ratios, scales).
+        create_pyramid_features : Functor for creating pyramid features given the features C3, C4, C5 from the backbone.
+        submodels               : Submodels to run on each feature map (default is regression and classification submodels).
+        output_fpn              : If True, the last 5 outputs of the returned model are P3...P7.
+        name                    : Name of the model.
+    # Returns
+        Model with inputs as input and as output the generated anchors and the output of each submodel for each pyramid level.
+
+        The order is as defined in submodels. Using default values the output is:
+        ```
+        [
+            anchors_P3, anchors_P4, anchors_P5, anchors_P6, anchors_P7,
+            regression_P3, regression_P4, regression_P5, regression_P6, regression_P7,
+            classification_P3, classification_P4, classification_P5, classification_P6, classification_P7,
+        ]
+        ```
+    """
     if submodels is None:
         submodels = default_submodels(num_classes, anchor_parameters)
 
@@ -193,28 +222,81 @@ def retinanet(
     features = create_pyramid_features(C3, C4, C5)
 
     # for all pyramid levels, run available submodels
-    pyramid = __build_pyramid(submodels, features)
-    anchors = __build_anchors(anchor_parameters, features)
+    pyramids = __build_pyramid(submodels, features)
+    anchors  = __build_anchors(anchor_parameters, features)
 
-    return keras.models.Model(inputs=inputs, outputs=[anchors] + pyramid, name=name)
+    # concatenate the outputs to one list
+    outputs = anchors + pyramids
+    if output_fpn:
+        outputs = features + outputs
+
+    return keras.models.Model(inputs=inputs, outputs=outputs, name=name)
 
 
-def retinanet_bbox(inputs, num_classes, nms=True, name='retinanet-bbox', *args, **kwargs):
-    model = retinanet(inputs=inputs, num_classes=num_classes, *args, **kwargs)
+def retinanet_bbox(
+    inputs,
+    num_classes,
+    nms=True,
+    output_fpn=False,
+    name='retinanet-bbox',
+    **kwargs
+):
+    """ Construct a RetinaNet model on top of a backbone and adds convenience functions to output detections directly.
+
+    This model uses the minimum retinanet model and appends a few layers to compute detections within the graph.
+    These layers include applying the regression values to the anchors and performing NMS.
+
+    # Arguments
+        inputs      : keras.layers.Input (or list of) for the input to the model.
+        num_classes : Number of classes to classify.
+        output_fpn  : If True, the last 5 outputs before detections are P3...P7.
+        name        : Name of the model.
+        *kwargs     : Additional kwargs to pass to the minimal retinanet model.
+    # Returns
+        Model with inputs as input and as output the output of each submodel for each pyramid level and the detections.
+
+        The order is as defined in submodels. Using default values the output is:
+        ```
+        [
+            regression_P3, regression_P4, regression_P5, regression_P6, regression_P7,
+            classification_P3, classification_P4, classification_P5, classification_P6, classification_P7,
+            boxes_P3, boxes_P4, boxes_P5, boxes_P6, boxes_P7,
+            detections
+        ]
+        ```
+    """
+    model = retinanet(inputs=inputs, num_classes=num_classes, output_fpn=output_fpn, **kwargs)
 
     # we expect the anchors, regression and classification values as first output
-    anchors        = model.outputs[0]
-    regression     = model.outputs[1]
-    classification = model.outputs[2]
+    anchors        = model.outputs[:5]
+    regression     = model.outputs[5:10]
+    classification = model.outputs[10:15]
+
+    if output_fpn:
+        other = model.outputs[15:-5]
+        fpn = model.outputs[-5:]
+    else:
+        other = model.outputs[15:]
 
     # apply predicted regression to anchors
-    boxes = layers.RegressBoxes(name='boxes')([anchors, regression])
+    boxes = [
+        layers.RegressBoxes(name='boxes_P{}'.format(3 + index))([a, r]) for index, (a, r) in enumerate(zip(anchors, regression))
+    ]
+
+    # concatenate all outputs to single blobs
+    all_anchors        = keras.layers.Concatenate(axis=1, name='all_anchors')(anchors)
+    all_regression     = keras.layers.Concatenate(axis=1, name='all_regression')(regression)
+    all_classification = keras.layers.Concatenate(axis=1, name='all_classification')(classification)
+    all_boxes          = keras.layers.Concatenate(axis=1, name='all_boxes')(boxes)
 
     # additionally apply non maximum suppression
     if nms:
-        detections = layers.NonMaximumSuppression(name='nms')([boxes, classification] + model.outputs[3:])
+        detections = layers.NonMaximumSuppression(name='nms')([all_boxes, all_classification] + other)
     else:
-        detections = keras.layers.Concatenate(axis=2)([boxes, classification] + model.outputs[3:])
+        detections = keras.layers.Concatenate(axis=2, name='detections')([all_boxes, classification] + other)
+
+    # construct the list of outputs
+    outputs = regression + classification + other + (fpn if output_fpn else []) + [detections]
 
     # construct the model
-    return keras.models.Model(inputs=inputs, outputs=model.outputs[1:] + [detections], name=name)
+    return keras.models.Model(inputs=inputs, outputs=outputs, name=name)

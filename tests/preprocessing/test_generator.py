@@ -171,17 +171,15 @@ class TestFilterAnnotations(object):
 
         input_image = np.zeros((500, 500, 3), dtype=np.uint8)
 
-        expected_annotations_group = [
-            np.array([
-                [0, 0, 10, 10],
-            ]),
-        ]
-
         simple_generator = SimpleGenerator(input_annotations_group, image=input_image, num_classes=2)
         # expect a UserWarning
         with pytest.warns(UserWarning):
-            _, [_, labels_batch] = simple_generator.next()
+            _, outputs = simple_generator.next()
+        label_targets = outputs[5:]
+
+        # concatenate all P3...7 for testing
+        label_targets = np.concatenate(label_targets, axis=1)
 
         # test that only object with class 0 is present in labels_batch
-        labels = np.unique(np.argmax(labels_batch == 1, axis=2))
+        labels = np.unique(np.argmax(label_targets == 1, axis=2))
         assert(len(labels) == 1 and labels[0] == 0), 'Expected only class 0 to be present, but got classes {}'.format(labels)
