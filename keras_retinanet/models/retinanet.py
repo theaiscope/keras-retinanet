@@ -125,7 +125,7 @@ def __create_pyramid_features(C3, C4, C5, feature_size=256):
     P7 = keras.layers.Activation('relu', name='C6_relu')(P6)
     P7 = keras.layers.Conv2D(feature_size, kernel_size=3, strides=2, padding='same', name='P7')(P7)
 
-    return P3, P4, P5, P6, P7
+    return [P3, P4, P5, P6, P7]
 
 
 class AnchorParameters:
@@ -228,7 +228,7 @@ def retinanet(
     # concatenate the outputs to one list
     outputs = anchors + pyramids
     if output_fpn:
-        outputs = features + outputs
+        outputs = outputs + features
 
     return keras.models.Model(inputs=inputs, outputs=outputs, name=name)
 
@@ -293,7 +293,7 @@ def retinanet_bbox(
     if nms:
         detections = layers.NonMaximumSuppression(name='nms')([all_boxes, all_classification] + other)
     else:
-        detections = keras.layers.Concatenate(axis=2, name='detections')([all_boxes, classification] + other)
+        detections = keras.layers.Concatenate(axis=2, name='detections')([all_boxes, all_classification] + other)
 
     # construct the list of outputs
     outputs = regression + classification + other + (fpn if output_fpn else []) + [detections]
